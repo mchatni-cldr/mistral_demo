@@ -34,6 +34,7 @@ laptop-local stdio server is invisible to it — hence the Cloudera AI Applicati
 | `scripts/warmup.py` | Pre-loads Impala metadata before a demo. Skipping it costs ~41s on the first join. |
 | `scripts/reinstall_deps.py` | Repairs a broken fastmcp 2.x → 4.x in-place upgrade. |
 | `scripts/register_connector.py` | Registers the connector with Mistral via the API, bypassing the UI. Use when the Create button is greyed out — the API returns a real error. |
+| `scripts/seed_demo_data.py` | Generates and loads the synthetic dataset. `--dry-run` to inspect, `--yes` to write (it DROPs the tables first). |
 | `NOTICE` / `LICENSE` | Apache-2.0 attribution for the upstream code this derives from. |
 
 Four runtime dependencies (`fastmcp`, `mcp`, `impyla`, `python-dotenv`) plus
@@ -162,57 +163,62 @@ python scripts/register_connector.py https://<subdomain>.<domain>/mcp
 
 ## 6. Demo script
 
-The `mistral_demo` database holds a small synthetic **30-day readmission risk**
-dataset (5 patients, 5 admissions, 7 vitals/labs, 5 clinical notes):
+`mistral_demo` holds a synthetic **30-day readmission risk** dataset — 500
+patients, 1,147 admissions, 6,583 vitals/labs, 2,294 clinical notes. Regenerate
+or resize it with `scripts/seed_demo_data.py` (`--dry-run` prints the shape and
+the planted signal without writing).
 
 | Table | Columns |
 |---|---|
-| `patients` | `patient_id`, `full_name`, `date_of_birth`, `sex`, `primary_condition` |
-| `admissions` | `admission_id`, `patient_id`, `admit_date`, `discharge_date`, `admitting_diagnosis`, `prior_admissions_90d`, `days_since_discharge`, `follow_up_scheduled`, `readmission_risk_flag` |
-| `vitals_labs` | `patient_id`, `admission_id`, `metric`, `value`, `unit`, `recorded_at` |
-| `clinical_notes` | `note_id`, `patient_id`, `admission_id`, `note_type`, `author_role`, `note_date`, `note_text` |
+| `patients` | `patient_id`, `full_name`, `date_of_birth` (DATE), `age`, `sex`, `primary_condition` |
+| `admissions` | `admission_id`, `patient_id`, `admit_date`/`discharge_date` (DATE), `length_of_stay_days`, `admitting_diagnosis`, `department`, `prior_admissions_90d`, `days_since_discharge`, `follow_up_scheduled`, `discharge_disposition`, `readmission_risk_flag`, `readmitted_within_30d` |
+| `vitals_labs` | `patient_id`, `admission_id`, `metric`, `value` (DOUBLE), `unit`, `recorded_at` (DATE), `abnormal` |
+| `clinical_notes` | `note_id`, `patient_id`, `admission_id`, `note_type`, `author_role`, `note_date` (DATE), `note_text` |
 
-Note every column except the two `int`s and two `boolean`s is typed `string`,
-including all the dates — so any date arithmetic needs an explicit `CAST`.
-Watch for that when the model writes its own SQL.
+Dates are real `DATE` columns and `value` is a `DOUBLE`, so date arithmetic and
+averages work without casting.
 
-Chain prompts so the model composes tools rather than doing one lookup:
+### The signal that's actually in the data
+
+Deliberately planted, so the model finds a real pattern rather than counting rows:
+
+| Cut | 30-day readmission rate |
+|---|---|
+| Follow-up scheduled | **22.4%** (n=851) |
+| No follow-up scheduled | **39.2%** (n=296) |
+| 0 / 1 / 2 prior admissions in 90d | **24.4% / 35.3% / 50.0%** |
+| Congestive heart failure → appendectomy | **44.2% → 6.8%** |
+
+`readmission_risk_flag` is a *predicted* flag recorded at discharge, and is
+imperfect on purpose — 37% precision, 62% recall — so "how well does the risk
+flag actually predict readmission?" has a real, non-trivial answer.
+
+### Prompts
 
 1. **"What tables are available in this database?"** → `get_schema`
-2. **"What's in the admissions table?"** → `execute_query` with `DESCRIBE`
-3. **"Which conditions have the most patients flagged as readmission risks?"**
-   → the model writes its own join + aggregate. This is the turn that sells it.
-4. **"For the flagged patients, was follow-up scheduled, and what do the
-   discharge notes say?"** → forces a three-table join and pulls unstructured
-   `note_text` alongside structured columns.
+2. **"What's in the admissions table?"** → `DESCRIBE`
+3. **"Which admitting diagnoses have the highest 30-day readmission rates?"**
+   → the model writes its own aggregate. CHF 44% vs appendectomy 7%.
+4. **"Does scheduling a follow-up appointment actually reduce readmissions?"**
+   → 22.4% vs 39.2%. The moment the demo lands.
+5. **"How accurate is the discharge risk flag?"** → forces a confusion-matrix
+   style query against `readmitted_within_30d`.
+6. **"Pull the discharge notes for readmitted CHF patients who had no
+   follow-up scheduled."** → three-table join, unstructured text beside
+   structured columns.
 
-Turns 3 and 4 are the demo — the model writing SQL it was never given. This
-query is verified working end-to-end and is a good rehearsal target:
-
-```sql
-SELECT p.primary_condition,
-       COUNT(*) AS admissions,
-       SUM(CAST(a.readmission_risk_flag AS INT)) AS flagged_at_risk,
-       AVG(a.prior_admissions_90d) AS avg_prior_90d
-FROM admissions a
-JOIN patients p ON a.patient_id = p.patient_id
-GROUP BY p.primary_condition
-ORDER BY flagged_at_risk DESC
-```
+Turns 4 and 5 are the demo: questions with real answers that nobody handed the
+model the SQL for.
 
 **Warm it up first — this matters more than it sounds.** The first query that
 joins a table Impala hasn't loaded metadata for was measured at **41s and then
-121s** on two separate cold starts against this deployment; the identical query
-runs in **0.4s** once warm. On
-stage that reads as a hang, and an MCP client may time out before the answer
-arrives. A minute before demoing:
+121s** on two separate cold starts; the identical query runs in **0.4s** once
+warm. The warehouse auto-suspends when idle, so run this a minute before
+demoing, every time:
 
 ```bash
 python scripts/warmup.py https://<subdomain>.<workbench-domain>/mcp
 ```
-
-It touches every table and forces each join the demo performs. Re-run until
-everything reports under a second.
 
 ## Troubleshooting
 
