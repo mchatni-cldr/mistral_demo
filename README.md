@@ -31,6 +31,8 @@ laptop-local stdio server is invisible to it — hence the Cloudera AI Applicati
 | `requirements.txt` | Pinned deps (see the pydantic note inside — it matters). |
 | `.env.example` | Every env var, with the traps called out. Copy to `.env` for local runs. |
 | `scripts/smoke_test.py` | Drives the real MCP protocol against an endpoint. Run this before touching the Mistral UI. |
+| `scripts/warmup.py` | Pre-loads Impala metadata before a demo. Skipping it costs ~41s on the first join. |
+| `scripts/reinstall_deps.py` | Repairs a broken fastmcp 2.x → 4.x in-place upgrade. |
 | `NOTICE` / `LICENSE` | Apache-2.0 attribution for the upstream code this derives from. |
 
 Four runtime dependencies (`fastmcp`, `mcp`, `impyla`, `python-dotenv`) plus
@@ -175,8 +177,18 @@ GROUP BY p.primary_condition
 ORDER BY flagged_at_risk DESC
 ```
 
-**Warm it up first.** A connection is opened and closed per tool call
-(no pooling), so the first query of a cold demo can take a few seconds.
+**Warm it up first — this matters more than it sounds.** The first query that
+joins a table Impala hasn't loaded metadata for was measured at **41 seconds**
+against this deployment; the identical query runs in **0.4s** once warm. On
+stage that reads as a hang, and an MCP client may time out before the answer
+arrives. A minute before demoing:
+
+```bash
+python scripts/warmup.py https://<subdomain>.<workbench-domain>/mcp
+```
+
+It touches every table and forces each join the demo performs. Re-run until
+everything reports under a second.
 
 ## Troubleshooting
 
