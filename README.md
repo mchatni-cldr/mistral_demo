@@ -27,16 +27,21 @@ laptop-local stdio server is invisible to it — hence the Cloudera AI Applicati
 
 | Path | Purpose |
 |---|---|
-| `app.py` | Application entrypoint. Defines the MCP tools and serves them over Streamable HTTP on `$CDSW_APP_PORT`. |
-| `iceberg_mcp/impala.py` | Read-only Impala access behind the two tools. |
+| `app.py` | The whole server: Impala access, the two MCP tools, and serving over Streamable HTTP on `$CDSW_APP_PORT`. Deliberately a single file with no local imports — see below. |
 | `requirements.txt` | Pinned deps (see the pydantic note inside — it matters). |
 | `.env.example` | Every env var, with the traps called out. Copy to `.env` for local runs. |
 | `scripts/smoke_test.py` | Drives the real MCP protocol against an endpoint. Run this before touching the Mistral UI. |
 | `NOTICE` / `LICENSE` | Apache-2.0 attribution for the upstream code this derives from. |
 
 Four runtime dependencies (`fastmcp`, `mcp`, `impyla`, `python-dotenv`) plus
-`uvicorn`. No vendored source tree, no submodule, no `sys.path` manipulation,
-and no Python 3.13 floor — it runs on any 3.11+ ML Runtime.
+`uvicorn`. No vendored source tree, no submodule, and no Python 3.13 floor —
+it runs on any 3.11+ ML Runtime.
+
+**Why one file:** Cloudera AI PBJ runtimes execute `app.py` through an IPython
+kernel, which does not put the script's directory on `sys.path` and does not
+reliably define `__file__`. Any `from <local_package> import ...` is therefore
+fragile there. Keeping everything in one file and importing only installed
+third-party packages removes that failure mode entirely.
 
 ## Prerequisites
 
@@ -172,10 +177,10 @@ ORDER BY flagged_at_risk DESC
 | `/healthz` fine but `initialize` hangs | SSE buffering at the proxy — confirm `stateless_http=True, json_response=True` took effect |
 | `get_schema` → `Error: ...` | `IMPALA_*` credentials, or a sleeping Virtual Warehouse |
 | Import crash: `cannot specify both default and default_factory` | pydantic drifted past 2.11.7; re-pin from `requirements.txt` |
-| `ModuleNotFoundError: iceberg_mcp` | A PBJ runtime runs `app.py` through an IPython kernel, which doesn't put the script's directory on `sys.path`. `app.py` bootstraps this itself; if you still hit it, set `PYTHONPATH=/home/cdsw` in the application's env vars. |
+| `ModuleNotFoundError` for a local module | Shouldn't happen — `app.py` imports only installed third-party packages. If you reintroduce a local module, note that PBJ runtimes don't put the script's directory on `sys.path`. |
 | `asyncio.run() cannot be called from a running event loop` | Same cause — the kernel already has a loop. `app.py` detects this and schedules the server on the existing loop. |
 | App shows "running" but nothing answers on the URL | The server never started. Check the app log for the `Starting Iceberg MCP Server on ...` line. |
-| `get_schema` → `Error:` but it worked locally | `load_dotenv()` returns `False` in Cloudera AI — `.env` is gitignored and never deployed. The `IMPALA_*` values must be set as **application environment variables**. |
+| `get_schema` → `Error:` but it worked locally | `load_dotenv()` returns `False` in Cloudera AI — `.env` is gitignored and never deployed. The `IMPALA_*` values must be set as **application environment variables**. The `[startup]` log lines print what the app actually sees; `<UNSET>` there is your answer. |
 | Tools listed but never called | Connector description too vague — name the data |
 
 ## Security

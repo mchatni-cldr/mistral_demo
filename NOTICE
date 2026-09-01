@@ -8,7 +8,7 @@ This product includes software derived from the Cloudera Iceberg MCP Server:
     Licensed under the Apache License, Version 2.0 (see LICENSE).
     Derived from commit 38a7f3914934ab851254291ed3a2934bcd95f6cd (2025-07-11).
 
-`iceberg_mcp/impala.py` is a rewrite of that project's `tools/impala_tools.py`.
+`app.py` is a rewrite of that project's `tools/impala_tools.py` and `server.py`.
 The tool contract (get_schema, execute_query) is unchanged. What differs:
 
 1. execute_query returns rows as JSON objects keyed by column name, rather than

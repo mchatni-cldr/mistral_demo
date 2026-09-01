@@ -1,53 +1,144 @@
-"""Cloudera AI Application entrypoint: Iceberg/Impala MCP server over HTTP.
+"""Cloudera AI Application: Iceberg/Impala MCP server over Streamable HTTP.
 
-Serves two read-only tools over MCP Streamable HTTP so that a SaaS MCP client
-(Mistral Vibe Work) can reach it at the workbench's public application URL.
+Serves two read-only tools so a SaaS MCP client (Mistral Vibe Work) can reach
+them at the workbench's public application URL.
+
+Deliberately a SINGLE FILE with no local package import. Cloudera AI PBJ
+runtimes execute this through an IPython kernel, which does not put the
+script's directory on sys.path and does not reliably define __file__, so any
+`from <local_package> import ...` is fragile here. Only third-party packages
+installed into site-packages are imported below.
 
 Derived from cloudera/iceberg-mcp-server (Apache-2.0); see NOTICE.
 """
 
 import asyncio
 import hmac
+import json
 import os
 import sys
 
 import uvicorn
 from dotenv import load_dotenv
 from fastmcp import FastMCP
+from impala.dbapi import connect
 from starlette.middleware import Middleware
 from starlette.responses import JSONResponse, PlainTextResponse
 
-load_dotenv()
+load_dotenv()  # no-op in Cloudera AI: .env is gitignored, use app env vars
 
-# Put the project root on sys.path before importing our own package.
-# Cloudera AI PBJ runtimes execute this file through an IPython kernel rather
-# than as `python app.py`, and a kernel does not add the script's directory to
-# sys.path the way the interpreter does -- so `import iceberg_mcp` fails with
-# ModuleNotFoundError unless we do it ourselves. `__file__` is also not
-# guaranteed to exist under a kernel, hence the fallback to cwd.
-_HERE = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
-for _candidate in (_HERE, os.getcwd()):
-    if os.path.isdir(os.path.join(_candidate, "iceberg_mcp")):
-        if _candidate not in sys.path:
-            sys.path.insert(0, _candidate)
-        break
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
 
-from iceberg_mcp import impala  # noqa: E402  (must follow the sys.path bootstrap)
-
-# Bind host: Cloudera AI documents binding applications to 127.0.0.1 on
-# $CDSW_APP_PORT; the ingress reaches the process inside the pod's network
-# namespace. Overridable so local testing can use 0.0.0.0.
+# Cloudera AI documents binding applications to 127.0.0.1 on $CDSW_APP_PORT;
+# the ingress reaches the process inside the pod's network namespace.
 HOST = os.getenv("MCP_HOST", "127.0.0.1")
 PORT = int(os.getenv("CDSW_APP_PORT") or os.getenv("MCP_PORT") or "8100")
 PATH = os.getenv("MCP_PATH", "/mcp")
 
-# Optional shared secret. Unset (the default) means the endpoint is open, which
-# is what a Cloudera AI application with "Enable Unauthenticated Access" gives
-# you. Set it and paste the same value into the Mistral connector's bearer
-# token to lock the endpoint down without any other change.
+# Unset (the default) = open endpoint, which is what "Enable Unauthenticated
+# Access" gives you. Set it and paste the same value into the Mistral
+# connector's bearer token to lock the endpoint down.
 BEARER_TOKEN = os.getenv("MCP_BEARER_TOKEN") or None
 
 PUBLIC_PATHS = ("/healthz", "/")
+
+# Guard rail, not a security boundary: the warehouse account should be
+# read-only in its own right. Does not stop stacked statements or WITH ... INSERT.
+READONLY_PREFIXES = ("select", "show", "describe", "with")
+REFUSAL = "Only read-only queries are allowed."
+
+# ---------------------------------------------------------------------------
+# Impala access
+# ---------------------------------------------------------------------------
+
+
+def _env_flag(name: str, default: str) -> bool:
+    """Parse a boolean-ish env var.
+
+    Upstream passed these to impyla as raw strings, so any non-empty value --
+    including "false" -- was truthy and SSL could not be turned off.
+    """
+    return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "on")
+
+
+def get_connection():
+    """Open a connection to the Impala coordinator using IMPALA_* env vars."""
+    return connect(
+        host=os.getenv("IMPALA_HOST", "localhost"),
+        port=int(os.getenv("IMPALA_PORT", "443")),
+        user=os.getenv("IMPALA_USER", ""),
+        password=os.getenv("IMPALA_PASSWORD", ""),
+        database=os.getenv("IMPALA_DATABASE", "default"),
+        auth_mechanism=os.getenv("IMPALA_AUTH_MECHANISM", "LDAP"),
+        use_http_transport=_env_flag("IMPALA_USE_HTTP_TRANSPORT", "true"),
+        http_path=os.getenv("IMPALA_HTTP_PATH", "cliservice"),
+        use_ssl=_env_flag("IMPALA_USE_SSL", "true"),
+    )
+
+
+def _safe_close(conn) -> None:
+    """Close a connection without masking the error that caused the failure.
+
+    impyla builds its connection object lazily, so when the socket was never
+    opened (bad host, bad password, sleeping virtual warehouse) conn.close()
+    raises AttributeError from a `finally` block and replaces the real
+    exception with "'NoneType' object has no attribute 'close'".
+    """
+    if conn is None:
+        return
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+
+def _execute_query(query: str) -> str:
+    tokens = query.strip().lower().split()
+    if not tokens or tokens[0] not in READONLY_PREFIXES:
+        return REFUSAL
+
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute(query)
+            if cur.description is None:
+                return "Query executed successfully."
+            # Key rows by column name. Bare tuples give the model no way to
+            # label values, which makes every downstream answer a guess.
+            columns = [d[0] for d in cur.description]
+            rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+            return json.dumps(rows, default=str)
+        finally:
+            cur.close()
+    except Exception as e:
+        return f"Error: {e}"
+    finally:
+        _safe_close(conn)
+
+
+def _get_schema() -> str:
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute("SHOW TABLES")
+            return json.dumps([row[0] for row in cur.fetchall()])
+        finally:
+            cur.close()
+    except Exception as e:
+        return f"Error: {e}"
+    finally:
+        _safe_close(conn)
+
+
+# ---------------------------------------------------------------------------
+# MCP server
+# ---------------------------------------------------------------------------
 
 mcp = FastMCP(
     name="Cloudera Iceberg MCP Server",
@@ -59,9 +150,8 @@ mcp = FastMCP(
 )
 
 
-# The docstrings below become the tool descriptions the model sees when
-# choosing a tool, so they carry the usage guidance rather than the code
-# comments doing it.
+# These docstrings become the tool descriptions the model sees when choosing a
+# tool, so the usage guidance lives here rather than in code comments.
 @mcp.tool()
 def get_schema() -> str:
     """List the tables available in the Cloudera Iceberg database.
@@ -69,7 +159,7 @@ def get_schema() -> str:
     Call this first when you don't yet know what data exists. Takes no
     arguments. Returns a JSON array of table names.
     """
-    return impala.get_schema()
+    return _get_schema()
 
 
 @mcp.tool()
@@ -85,7 +175,7 @@ def execute_query(query: str) -> str:
     Returns a JSON array of row objects keyed by column name, or a string
     beginning with "Error:" if the query failed.
     """
-    return impala.execute_query(query)
+    return _execute_query(query)
 
 
 @mcp.custom_route("/healthz", methods=["GET"])
@@ -113,7 +203,7 @@ class BearerAuthMiddleware:
     interferes with the MCP response body.
     """
 
-    def __init__(self, app, token: str | None):
+    def __init__(self, app, token):
         self.app = app
         self.token = token
 
@@ -156,13 +246,20 @@ def serve() -> None:
     running. In that case, schedule the server on the existing loop instead;
     the kernel process stays alive and keeps serving.
     """
+    print(f"[startup] python     : {sys.version.split()[0]}", flush=True)
+    print(f"[startup] cwd        : {os.getcwd()}", flush=True)
+    print(f"[startup] impala host: {os.getenv('IMPALA_HOST', '<UNSET>')}", flush=True)
+    print(f"[startup] database   : {os.getenv('IMPALA_DATABASE', '<UNSET>')}", flush=True)
+    print(f"[startup] user       : {os.getenv('IMPALA_USER', '<UNSET>')}", flush=True)
     print(
-        f"Starting Iceberg MCP Server on http://{HOST}:{PORT}{PATH} "
+        f"[startup] serving on http://{HOST}:{PORT}{PATH} "
         f"(auth: {'bearer' if BEARER_TOKEN else 'none'})",
         flush=True,
     )
-    config = uvicorn.Config(app, host=HOST, port=PORT, log_level=os.getenv("LOG_LEVEL", "info"))
-    server = uvicorn.Server(config)
+
+    server = uvicorn.Server(
+        uvicorn.Config(app, host=HOST, port=PORT, log_level=os.getenv("LOG_LEVEL", "info"))
+    )
 
     try:
         loop = asyncio.get_running_loop()
@@ -170,13 +267,13 @@ def serve() -> None:
         loop = None
 
     if loop is not None and loop.is_running():
-        print("Event loop already running (PBJ runtime); serving on it.", flush=True)
+        print("[startup] event loop already running (PBJ runtime); serving on it", flush=True)
         loop.create_task(server.serve())
     else:
         server.run()
 
 
 # Not guarded by `if __name__ == "__main__"`. Under a PBJ runtime the module
-# name is not always "__main__", and a guard that silently does nothing would
-# leave the application "running" with nothing listening on $CDSW_APP_PORT.
+# name is not reliably "__main__", and a guard that silently does nothing would
+# leave the application reporting healthy with nothing on $CDSW_APP_PORT.
 serve()
