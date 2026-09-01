@@ -227,6 +227,82 @@ class BearerAuthMiddleware:
         await self.app(scope, receive, send)
 
 
+class ClientCompatMiddleware:
+    """Tolerate probe requests that don't quite follow the MCP spec.
+
+    Mistral's connector validation follows its own documented examples, which
+    are looser than the spec:
+
+    * Its `initialize` example omits `clientInfo`. The spec marks that
+      required, so the server answers -32602 "Invalid request parameters" and
+      the platform concludes the handshake failed -- leaving the Create button
+      disabled with no useful error. We inject a placeholder instead.
+    * Its reachability example is `curl -I`, a HEAD request, which the MCP
+      endpoint answers 405. We answer 200 so the probe sees a live server.
+
+    Neither changes behaviour for a spec-compliant client: a request that
+    already carries clientInfo is passed through untouched.
+    """
+
+    PLACEHOLDER = {"name": "unknown-client", "version": "0.0.0"}
+
+    def __init__(self, app, paths):
+        self.app = app
+        self.paths = paths
+
+    def _patch(self, body: bytes) -> bytes:
+        try:
+            payload = json.loads(body)
+        except (ValueError, UnicodeDecodeError):
+            return body
+        if not isinstance(payload, dict) or payload.get("method") != "initialize":
+            return body
+        params = payload.get("params")
+        if not isinstance(params, dict) or params.get("clientInfo"):
+            return body
+        params["clientInfo"] = self.PLACEHOLDER
+        return json.dumps(payload).encode()
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("path") not in self.paths:
+            await self.app(scope, receive, send)
+            return
+
+        if scope["method"] == "HEAD":
+            await PlainTextResponse("", status_code=200)(scope, receive, send)
+            return
+
+        if scope["method"] != "POST":
+            await self.app(scope, receive, send)
+            return
+
+        body = b""
+        while True:
+            message = await receive()
+            if message["type"] != "http.request":
+                await self.app(scope, receive, send)
+                return
+            body += message.get("body", b"")
+            if not message.get("more_body", False):
+                break
+
+        body = self._patch(body)
+        headers = [(k, v) for k, v in scope["headers"] if k != b"content-length"]
+        headers.append((b"content-length", str(len(body)).encode()))
+        scope = dict(scope, headers=headers)
+
+        delivered = False
+
+        async def replay():
+            nonlocal delivered
+            if delivered:
+                return {"type": "http.disconnect"}
+            delivered = True
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        await self.app(scope, replay, send)
+
+
 class NormalizeMcpPath:
     """Serve the MCP endpoint at both /mcp and /mcp/ without a redirect.
 
@@ -270,9 +346,10 @@ _app = mcp.http_app(
     ],
 )
 
-# Wrapped outside the Starlette app so it runs before routing. Lifespan and
-# every other scope type pass straight through.
-app = NormalizeMcpPath(_app, PATH)
+# Wrapped outside the Starlette app so they run before routing. Lifespan and
+# every other scope type pass straight through. NormalizeMcpPath is outermost
+# so the compat layer always sees the canonical path.
+app = NormalizeMcpPath(ClientCompatMiddleware(_app, {PATH}), PATH)
 
 
 def serve() -> None:

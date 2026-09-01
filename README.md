@@ -39,6 +39,13 @@ Four runtime dependencies (`fastmcp`, `mcp`, `impyla`, `python-dotenv`) plus
 `uvicorn`. No vendored source tree, no submodule, and no Python 3.13 floor —
 it runs on any 3.11+ ML Runtime.
 
+**Client compatibility:** Mistral's connector validation follows its own
+documented examples, which are looser than the MCP spec — its `initialize`
+sample omits the required `clientInfo`, and its reachability check is a `HEAD`
+request the MCP endpoint would answer `405`. `ClientCompatMiddleware` injects a
+placeholder `clientInfo` and answers `HEAD` with `200`. Requests that already
+carry `clientInfo` pass through untouched.
+
 **Why one file:** Cloudera AI PBJ runtimes execute `app.py` through an IPython
 kernel, which does not put the script's directory on `sys.path` and does not
 reliably define `__file__`. Any `from <local_package> import ...` is therefore
@@ -204,7 +211,7 @@ everything reports under a second.
 | App shows "running" but nothing answers on the URL | The server never started. Check the app log for the `Starting Iceberg MCP Server on ...` line. |
 | `get_schema` → `Error:` but it worked locally | `load_dotenv()` returns `False` in Cloudera AI — `.env` is gitignored and never deployed. The `IMPALA_*` values must be set as **application environment variables**. The `[startup]` log lines print what the app actually sees; `<UNSET>` there is your answer. |
 | Tools listed but never called | Connector description too vague — name the data |
-| Mistral's Create button greyed out | Either the connector name has a hyphen/underscore/space, or the server negotiates an old MCP protocol version. Mistral requires `2025-06-18`; `fastmcp` 2.9.2 only ever replies `2025-03-26`. `requirements.txt` pins fastmcp 4.x for this reason. |
+| Mistral's Create button greyed out | Three known causes, all handled here: (1) the connector name has a hyphen/underscore/space — Mistral requires "no spaces or special characters"; (2) the server negotiates an old protocol version — Mistral needs `2025-06-18`, and fastmcp 2.9.2 only ever replies `2025-03-26`, which is why `requirements.txt` pins fastmcp 4.x; (3) Mistral's probe omits `clientInfo` from `initialize`, which a spec-compliant server rejects with `-32602` — `ClientCompatMiddleware` in `app.py` injects a placeholder. Also note custom connectors are **administrator-only**. |
 | `ImportError: cannot import name 'FastMCP' from 'fastmcp' (unknown location)` | pip installed 4.0.0's files, then uninstalled 2.9.2 and deleted the filenames both versions share (`__init__.py`, `settings.py`, `exceptions.py`), leaving a directory Python treats as an empty namespace package. `--force-reinstall` does **not** fix it — the stale directory is never removed. Run `python scripts/reinstall_deps.py`. |
 
 ## Security
