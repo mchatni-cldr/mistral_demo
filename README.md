@@ -172,7 +172,10 @@ ORDER BY flagged_at_risk DESC
 | `/healthz` fine but `initialize` hangs | SSE buffering at the proxy — confirm `stateless_http=True, json_response=True` took effect |
 | `get_schema` → `Error: ...` | `IMPALA_*` credentials, or a sleeping Virtual Warehouse |
 | Import crash: `cannot specify both default and default_factory` | pydantic drifted past 2.11.7; re-pin from `requirements.txt` |
-| `ModuleNotFoundError: iceberg_mcp` | App script run from outside the project root; Cloudera AI runs from the project root by default |
+| `ModuleNotFoundError: iceberg_mcp` | A PBJ runtime runs `app.py` through an IPython kernel, which doesn't put the script's directory on `sys.path`. `app.py` bootstraps this itself; if you still hit it, set `PYTHONPATH=/home/cdsw` in the application's env vars. |
+| `asyncio.run() cannot be called from a running event loop` | Same cause — the kernel already has a loop. `app.py` detects this and schedules the server on the existing loop. |
+| App shows "running" but nothing answers on the URL | The server never started. Check the app log for the `Starting Iceberg MCP Server on ...` line. |
+| `get_schema` → `Error:` but it worked locally | `load_dotenv()` returns `False` in Cloudera AI — `.env` is gitignored and never deployed. The `IMPALA_*` values must be set as **application environment variables**. |
 | Tools listed but never called | Connector description too vague — name the data |
 
 ## Security
