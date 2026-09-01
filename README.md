@@ -35,6 +35,8 @@ laptop-local stdio server is invisible to it — hence the Cloudera AI Applicati
 | `scripts/reinstall_deps.py` | Repairs a broken fastmcp 2.x → 4.x in-place upgrade. |
 | `scripts/register_connector.py` | Registers the connector with Mistral via the API, bypassing the UI. Use when the Create button is greyed out — the API returns a real error. |
 | `scripts/seed_demo_data.py` | Generates and loads the synthetic dataset. `--dry-run` to inspect, `--yes` to write (it DROPs the tables first). |
+| `ontology/readmission.yaml` | Semantic layer source of truth: entities, join paths, metric definitions, pitfalls. |
+| `scripts/build_ontology.py` | Validates the ontology against the live warehouse and renders `ontology/ONTOLOGY.md`. |
 | `NOTICE` / `LICENSE` | Apache-2.0 attribution for the upstream code this derives from. |
 
 Four runtime dependencies (`fastmcp`, `mcp`, `impyla`, `python-dotenv`) plus
@@ -219,6 +221,30 @@ demoing, every time:
 ```bash
 python scripts/warmup.py https://<subdomain>.<workbench-domain>/mcp
 ```
+
+## 7. Give the model a semantic layer
+
+`get_schema` tells the model the tables exist; it doesn't say how they join,
+what a metric means, or that `readmission_risk_flag` is a prediction rather
+than an outcome. `ontology/ONTOLOGY.md` supplies that.
+
+Mistral custom connectors don't yet support MCP resources or prompt templates,
+so the ontology is delivered on the Mistral side instead — upload
+`ontology/ONTOLOGY.md` to a **Library**, or paste it into a custom **Agent's**
+instructions alongside the connector.
+
+Because it lives outside the repo it can drift from the schema silently, and a
+semantic layer that misnames a column is worse than none — the model trusts it
+and writes SQL that fails. So it is generated, never hand-written:
+
+```bash
+python scripts/build_ontology.py            # validate + render
+python scripts/build_ontology.py --check    # validate only
+```
+
+Every table and column must exist, and **every metric's SQL must actually
+execute**, or the build aborts. Enum values are read from the data. Re-run it
+after any schema or data change, and re-upload the result.
 
 ## Troubleshooting
 
