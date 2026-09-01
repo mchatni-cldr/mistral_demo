@@ -33,6 +33,7 @@ laptop-local stdio server is invisible to it — hence the Cloudera AI Applicati
 | `scripts/smoke_test.py` | Drives the real MCP protocol against an endpoint. Run this before touching the Mistral UI. |
 | `scripts/warmup.py` | Pre-loads Impala metadata before a demo. Skipping it costs ~41s on the first join. |
 | `scripts/reinstall_deps.py` | Repairs a broken fastmcp 2.x → 4.x in-place upgrade. |
+| `scripts/register_connector.py` | Registers the connector with Mistral via the API, bypassing the UI. Use when the Create button is greyed out — the API returns a real error. |
 | `NOTICE` / `LICENSE` | Apache-2.0 attribution for the upstream code this derives from. |
 
 Four runtime dependencies (`fastmcp`, `mcp`, `impyla`, `python-dotenv`) plus
@@ -143,6 +144,20 @@ Connectors → **+ Add Connector** → **Custom MCP Connector**
 
 Click **Connect**; Mistral auto-detects auth. With `MCP_BEARER_TOKEN` unset it
 should connect with none. Confirm `get_schema` and `execute_query` appear.
+
+**If the Create button stays greyed out**, validate the server independently
+before blaming it — Mistral's own
+[connector debugger](https://console.mistral.ai/build/connectors/debugger)
+reports the detected auth method, and
+[MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector) exercises
+the protocol. If both pass, the block is on the account side, and the API path
+will say so explicitly where the disabled button won't:
+
+```bash
+pip install mistralai
+export MISTRAL_API_KEY=...        # https://console.mistral.ai/
+python scripts/register_connector.py https://<subdomain>.<domain>/mcp
+```
 
 ## 6. Demo script
 
