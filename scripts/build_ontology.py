@@ -87,7 +87,15 @@ def main() -> int:
             except Exception as e:
                 errors.append(f"metric {m['name']!r} failed to execute: {str(e)[:120]}")
 
-        # 4. enum values read from the data
+        # 4. every reusable pattern must run as-is
+        for pat in spec.get("patterns", []):
+            try:
+                cur.execute(pat["sql"])
+                cur.fetchall()
+            except Exception as e:
+                errors.append(f"pattern {pat['name']!r} failed to execute: {str(e)[:120]}")
+
+        # 5. enum values read from the data
         enums = {}
         for d in spec["dimensions"]:
             src = d.get("enum_from")
@@ -104,7 +112,8 @@ def main() -> int:
             return 1
 
         print(f"Validated against {db}: {len(schemas)} tables, "
-              f"{len(spec['metrics'])} metrics all executed.")
+              f"{len(spec['metrics'])} metrics and "
+              f"{len(spec.get('patterns', []))} patterns all executed.")
         for name, value in metric_values.items():
             print(f"    {name:<24} {value}")
 
@@ -160,6 +169,22 @@ def render(spec, schemas, enums, values, db) -> str:
           f"| {values.get(m['name'])}{unit} |")
     w("")
 
+    w("## Conventions\n")
+    w("Follow these so answers are comparable between questions.\n")
+    for c in spec.get("conventions", []):
+        w(f"- **{c['name']}.** {c['rule']}")
+    w("")
+
+    w("## Query patterns\n")
+    w("Reusable shapes for the analyses this data is built to support. Each one "
+      "is verified to run against the warehouse as written.\n")
+    for pat in spec.get("patterns", []):
+        w(f"### {pat['name']}\n")
+        w(pat["description"] + "\n")
+        w("```sql")
+        w(pat["sql"].strip())
+        w("```\n")
+
     w("## Dimensions\n")
     for d in spec["dimensions"]:
         vals = enums.get(d.get("enum_from") or "")
@@ -168,6 +193,11 @@ def render(spec, schemas, enums, values, db) -> str:
             w(f"- **`{d['column']}`** (`{d['entity']}`): {shown}")
         else:
             w(f"- **`{d['column']}`** (`{d['entity']}`)")
+    w("")
+
+    w("## How to reason about this data\n")
+    for n in spec.get("analysis_notes", []):
+        w(f"- {n}")
     w("")
 
     w("## Rules and pitfalls\n")
