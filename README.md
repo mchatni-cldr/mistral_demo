@@ -145,13 +145,14 @@ Connectors → **+ Add Connector** → **Custom MCP Connector**
 Click **Connect**; Mistral auto-detects auth. With `MCP_BEARER_TOKEN` unset it
 should connect with none. Confirm `get_schema` and `execute_query` appear.
 
-**If the Create button stays greyed out**, validate the server independently
-before blaming it — Mistral's own
+**If the Create button stays greyed out — use the API instead. It works.**
+Confirmed on this deployment: the UI refused to enable Create even though
+Mistral's own
 [connector debugger](https://console.mistral.ai/build/connectors/debugger)
-reports the detected auth method, and
-[MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector) exercises
-the protocol. If both pass, the block is on the account side, and the API path
-will say so explicitly where the disabled button won't:
+validated the server (auth `NONE`, clean handshake, protocol `2025-11-25`), the
+name had no special characters, and the account was its own administrator. The
+identical registration through the API succeeded immediately, so this is a UI
+problem, not a server or plan restriction.
 
 ```bash
 pip install mistralai
@@ -200,8 +201,9 @@ ORDER BY flagged_at_risk DESC
 ```
 
 **Warm it up first — this matters more than it sounds.** The first query that
-joins a table Impala hasn't loaded metadata for was measured at **41 seconds**
-against this deployment; the identical query runs in **0.4s** once warm. On
+joins a table Impala hasn't loaded metadata for was measured at **41s and then
+121s** on two separate cold starts against this deployment; the identical query
+runs in **0.4s** once warm. On
 stage that reads as a hang, and an MCP client may time out before the answer
 arrives. A minute before demoing:
 
