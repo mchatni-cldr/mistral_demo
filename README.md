@@ -163,6 +163,12 @@ export MISTRAL_API_KEY=...        # https://console.mistral.ai/
 python scripts/register_connector.py https://<subdomain>.<domain>/mcp
 ```
 
+The script upserts: if a connector with that name already exists it is updated
+in place, keeping the id Mistral already knows. It also sets the connector icon
+to `<server>/icon.png`, which the deployed server hosts itself — the Cloudera
+mark is embedded in `app.py` as base64 rather than read from disk, because PBJ
+runtimes don't reliably resolve file paths. Override with `--icon-url`.
+
 ## 6. Demo script
 
 `mistral_demo` holds a synthetic **30-day readmission risk** dataset — 500

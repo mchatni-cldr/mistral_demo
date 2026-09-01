@@ -42,6 +42,9 @@ def main() -> int:
                     help="Bearer token for your MCP server, if it requires one")
     ap.add_argument("--visibility", default="private",
                     choices=["private", "shared_workspace", "shared_org"])
+    ap.add_argument("--icon-url", default=None,
+                    help="Public image URL for the connector icon. The deployed "
+                         "server serves the Cloudera mark at <server>/icon.png.")
     ap.add_argument("--list", action="store_true", help="List connectors and exit")
     args = ap.parse_args()
 
@@ -61,28 +64,54 @@ def main() -> int:
     if not args.url:
         ap.error("the MCP endpoint URL is required unless --list is given")
 
-    kwargs = dict(
-        name=args.name,
-        description=args.description,
-        server=args.url,
-        visibility=args.visibility,
-    )
-    if args.token:
-        kwargs["headers"] = {"Authorization": f"Bearer {args.token}"}
+    # Default the icon to the one the deployed server hosts itself. Hotlinking
+    # cloudera.com would depend on an AEM build path that changes on any site
+    # deploy; this URL is ours and moves with the server.
+    icon_url = args.icon_url
+    if icon_url is None and args.url:
+        icon_url = args.url.rsplit("/mcp", 1)[0].rstrip("/") + "/icon.png"
 
-    print(f"Registering {args.name!r} -> {args.url}")
+    # Upsert: the connector may already exist, in which case create() would
+    # either fail or leave a duplicate. Look it up first and update in place so
+    # the id Mistral already knows stays the same.
+    existing = None
     try:
-        connector = client.beta.connectors.create(**kwargs)
+        existing = client.beta.connectors.get(connector_id_or_name=args.name)
+    except Exception:
+        pass
+
+    try:
+        if existing is not None:
+            cid = getattr(existing, "id", None)
+            print(f"Updating existing connector {args.name!r} (id={cid})")
+            fields = dict(connector_id=cid, name=args.name,
+                          description=args.description, icon_url=icon_url)
+            if args.url:
+                fields["server"] = args.url
+            if args.token:
+                fields["headers"] = {"Authorization": f"Bearer {args.token}"}
+            connector = client.beta.connectors.update(**fields)
+        else:
+            print(f"Registering {args.name!r} -> {args.url}")
+            fields = dict(name=args.name, description=args.description,
+                          server=args.url, visibility=args.visibility,
+                          icon_url=icon_url)
+            if args.token:
+                fields["headers"] = {"Authorization": f"Bearer {args.token}"}
+            connector = client.beta.connectors.create(**fields)
     except Exception as e:
-        # This is the point of the script: surface the real reason.
+        # The point of this script: surface the real reason, which a greyed-out
+        # button never does.
         print(f"\nFAILED: {type(e).__name__}: {e}")
         body = getattr(e, "body", None) or getattr(e, "raw_response", None)
         if body:
             print(f"Response: {body}")
         return 1
 
-    print(f"OK. id={getattr(connector, 'id', '?')} name={getattr(connector, 'name', '?')}")
-    print("It should now appear under Connectors -> My Connectors.")
+    print(f"OK. id={getattr(connector, 'id', '?')} "
+          f"name={getattr(connector, 'name', '?')}")
+    print(f"    icon={getattr(connector, 'icon_url', icon_url)}")
+    print("Check Connectors -> My Connectors; the icon may take a refresh to appear.")
     return 0
 
 
