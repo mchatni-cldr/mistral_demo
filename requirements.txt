@@ -1,0 +1,14 @@
+# Pinned to match iceberg-mcp-server/uv.lock so the deployed environment
+# matches what upstream actually resolved and tested against.
+#
+# NOTE: pydantic/pydantic-settings MUST stay pinned. fastmcp 2.9.2 crashes at
+# import time on pydantic >= 2.12 ("cannot specify both default and
+# default_factory" in fastmcp/settings.py).
+fastmcp==2.9.2
+mcp==1.9.4
+impyla==0.21.0
+python-dotenv==1.1.0
+pydantic==2.11.7
+pydantic-settings==2.10.1
+starlette==0.47.1
+uvicorn==0.34.3

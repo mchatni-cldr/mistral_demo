@@ -1,0 +1,29 @@
+Cloudera Iceberg MCP → Mistral Vibe demo
+Copyright (c) 2025
+
+This product includes software derived from the Cloudera Iceberg MCP Server:
+
+    https://github.com/cloudera/iceberg-mcp-server
+    Copyright (c) 2025 Cloudera, Inc. All Rights Reserved.
+    Licensed under the Apache License, Version 2.0 (see LICENSE).
+    Derived from commit 38a7f3914934ab851254291ed3a2934bcd95f6cd (2025-07-11).
+
+`iceberg_mcp/impala.py` is a rewrite of that project's `tools/impala_tools.py`.
+The tool contract (get_schema, execute_query) is unchanged. What differs:
+
+1. execute_query returns rows as JSON objects keyed by column name, rather than
+   bare tuples that give a model no way to label the values it receives.
+2. An empty or whitespace-only query is refused instead of raising an uncaught
+   IndexError from `query.strip().lower().split()[0]`.
+3. Connections are closed through _safe_close(). impyla builds its connection
+   object lazily, so when the socket was never opened, conn.close() raises
+   AttributeError from a `finally` block and buries the real error -- every
+   connectivity failure surfaced as "'NoneType' object has no attribute
+   'close'" instead of its actual cause.
+4. IMPALA_USE_SSL and IMPALA_USE_HTTP_TRANSPORT are parsed as booleans. Upstream
+   passed the raw strings to impyla, so any non-empty value -- including
+   "false" -- was truthy and SSL could not be disabled via env.
+5. Cursors are closed in a `finally` block, so a failing query does not leak one.
+6. Serving is handled by app.py over Streamable HTTP on $CDSW_APP_PORT.
+   Upstream's main() calls mcp.run() with no host or port, binding
+   127.0.0.1:8000 and ignoring the port Cloudera AI assigns.
