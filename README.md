@@ -78,7 +78,15 @@ git push -u origin main
 Then in Cloudera AI: **New Project → Git**, paste the same URL. Redeploys become
 `git pull` + restart the application.
 
-Then, in a project session once: `pip install -r requirements.txt`.
+Then, in a project session once:
+
+```bash
+python scripts/reinstall_deps.py
+```
+
+Use that rather than a bare `pip install` when **upgrading** an existing
+project. Going from fastmcp 2.x to 4.x in place leaves a broken install that
+`--force-reinstall` does not repair — see the troubleshooting table.
 
 The original upstream clone is gitignored and no longer used by anything — you
 can delete `iceberg-mcp-server/` whenever you like.
@@ -185,7 +193,7 @@ ORDER BY flagged_at_risk DESC
 | `get_schema` → `Error:` but it worked locally | `load_dotenv()` returns `False` in Cloudera AI — `.env` is gitignored and never deployed. The `IMPALA_*` values must be set as **application environment variables**. The `[startup]` log lines print what the app actually sees; `<UNSET>` there is your answer. |
 | Tools listed but never called | Connector description too vague — name the data |
 | Mistral's Create button greyed out | Either the connector name has a hyphen/underscore/space, or the server negotiates an old MCP protocol version. Mistral requires `2025-06-18`; `fastmcp` 2.9.2 only ever replies `2025-03-26`. `requirements.txt` pins fastmcp 4.x for this reason. |
-| `ImportError: cannot import name 'FastMCP'` after upgrading | An in-place pip upgrade from fastmcp 2.x to 4.x leaves broken artifacts. Use `pip install --force-reinstall -r requirements.txt`, or recreate the environment. |
+| `ImportError: cannot import name 'FastMCP' from 'fastmcp' (unknown location)` | pip installed 4.0.0's files, then uninstalled 2.9.2 and deleted the filenames both versions share (`__init__.py`, `settings.py`, `exceptions.py`), leaving a directory Python treats as an empty namespace package. `--force-reinstall` does **not** fix it — the stale directory is never removed. Run `python scripts/reinstall_deps.py`. |
 
 ## Security
 
