@@ -1,14 +1,12 @@
-# Pinned to match iceberg-mcp-server/uv.lock so the deployed environment
-# matches what upstream actually resolved and tested against.
+# Versions verified against the live Cloudera AI deployment.
 #
-# NOTE: pydantic/pydantic-settings MUST stay pinned. fastmcp 2.9.2 crashes at
-# import time on pydantic >= 2.12 ("cannot specify both default and
-# default_factory" in fastmcp/settings.py).
-fastmcp==2.9.2
-mcp==1.9.4
-impyla==0.21.0
-python-dotenv==1.1.0
-pydantic==2.11.7
-pydantic-settings==2.10.1
-starlette==0.47.1
-uvicorn==0.34.3
+# fastmcp 4.x / mcp 2.x are REQUIRED, not cosmetic: Mistral's custom MCP
+# connector requires the server to negotiate MCP protocol version 2025-06-18
+# on `initialize`. fastmcp 2.9.2 (upstream's pin) only ever replies
+# 2025-03-26, which Mistral rejects -- the Create button stays greyed out.
+fastmcp==4.0.0
+mcp==2.1.1
+impyla==0.24.0
+python-dotenv==1.2.3
+starlette==1.6.0
+uvicorn==0.52.4

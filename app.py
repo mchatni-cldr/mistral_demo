@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 from fastmcp import FastMCP
 from impala.dbapi import connect
 from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse, PlainTextResponse
 
 load_dotenv()  # no-op in Cloudera AI: .env is gitignored, use app env vars
@@ -226,16 +227,52 @@ class BearerAuthMiddleware:
         await self.app(scope, receive, send)
 
 
+class NormalizeMcpPath:
+    """Serve the MCP endpoint at both /mcp and /mcp/ without a redirect.
+
+    Starlette redirects one form to the other with a 307, and which form is
+    canonical flipped between fastmcp 2.x and 4.x. A 307 on POST relies on the
+    client re-sending the body, which not every client does correctly -- and a
+    connector that fails this way looks like a server fault. Rewriting the path
+    before routing means either URL answers 200 directly.
+    """
+
+    def __init__(self, app, path):
+        self.app = app
+        self.path = path
+        self.variants = {path, path + "/"} if not path.endswith("/") else {path, path[:-1]}
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope.get("path") in self.variants:
+            scope = dict(scope, path=self.path, raw_path=self.path.encode())
+        await self.app(scope, receive, send)
+
+
 # stateless_http + json_response are deliberate: every call becomes a plain
 # POST -> JSON with no mcp-session-id stickiness and no long-lived SSE stream,
 # which is what survives the Cloudera ingress proxy in front of the app.
-app = mcp.http_app(
+_app = mcp.http_app(
     path=PATH,
     transport="http",
     stateless_http=True,
     json_response=True,
-    middleware=[Middleware(BearerAuthMiddleware, token=BEARER_TOKEN)],
+    middleware=[
+        # Permissive CORS: without it, OPTIONS preflight returns 405 and any
+        # browser-side validation of this endpoint fails before it can start.
+        Middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_methods=["*"],
+            allow_headers=["*"],
+            expose_headers=["mcp-session-id", "mcp-protocol-version"],
+        ),
+        Middleware(BearerAuthMiddleware, token=BEARER_TOKEN),
+    ],
 )
+
+# Wrapped outside the Starlette app so it runs before routing. Lifespan and
+# every other scope type pass straight through.
+app = NormalizeMcpPath(_app, PATH)
 
 
 def serve() -> None:

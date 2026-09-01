@@ -17,8 +17,32 @@ import asyncio
 import os
 import sys
 
+from contextlib import asynccontextmanager
+
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+
+# mcp 2.x renamed the transport and moved headers onto an httpx client;
+# mcp 1.x took a `headers` kwarg directly. Support both.
+try:
+    from mcp.client.streamable_http import httpx2
+    from mcp.client.streamable_http import streamable_http_client as _transport
+
+    _MCP2 = True
+except ImportError:
+    from mcp.client.streamable_http import streamablehttp_client as _transport
+
+    _MCP2 = False
+
+
+@asynccontextmanager
+async def connect(url: str, headers: dict):
+    if _MCP2:
+        async with httpx2.AsyncClient(headers=headers, timeout=60) as http_client:
+            async with _transport(url, http_client=http_client) as streams:
+                yield streams[0], streams[1]
+    else:
+        async with _transport(url, headers=headers) as streams:
+            yield streams[0], streams[1]
 
 
 def render(result) -> tuple[str, bool]:
@@ -27,7 +51,11 @@ def render(result) -> tuple[str, bool]:
     returning a plain "Error: ..." string from their own except block."""
     parts = [getattr(block, "text", repr(block)) for block in result.content]
     text = "\n".join(parts)
-    failed = bool(getattr(result, "isError", False)) or text.startswith("Error")
+    # mcp 1.x used camelCase, 2.x uses snake_case.
+    is_error = getattr(result, "is_error", None)
+    if is_error is None:
+        is_error = getattr(result, "isError", False)
+    failed = bool(is_error) or text.startswith("Error")
     limit = int(os.getenv("SMOKE_MAX_CHARS", "600"))
     if len(text) > limit:
         text = text[:limit] + f"... [{len(text)} chars total]"
@@ -38,11 +66,14 @@ async def run(url: str, token: str | None, query: str | None) -> int:
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     failures = []
 
-    async with streamablehttp_client(url, headers=headers) as (read, write, _):
+    async with connect(url, headers) as (read, write):
         async with ClientSession(read, write) as session:
             init = await session.initialize()
-            print(f"[ok]   initialize  -> {init.serverInfo.name} "
-                  f"(protocol {init.protocolVersion})")
+            info = getattr(init, "server_info", None) or getattr(init, "serverInfo")
+            proto = getattr(init, "protocol_version", None) or getattr(
+                init, "protocolVersion", "?"
+            )
+            print(f"[ok]   initialize  -> {info.name} (protocol {proto})")
 
             tools = (await session.list_tools()).tools
             names = [t.name for t in tools]

@@ -117,7 +117,9 @@ same wall.
 Connectors → **+ Add Connector** → **Custom MCP Connector**
 
 - **URL:** `https://iceberg-mcp.<workbench-domain>/mcp`
-- **Name:** `cloudera-iceberg`
+- **Name:** `clouderaiceberg` — Mistral requires "a unique identifier (no
+  spaces or special characters)". A hyphen or underscore can leave the Create
+  button greyed out.
 - **Description:** name the database and what's in it. This is what steers the
   model toward using the tool at all — a vague description is the usual reason
   a connected server never gets called.
@@ -182,6 +184,8 @@ ORDER BY flagged_at_risk DESC
 | App shows "running" but nothing answers on the URL | The server never started. Check the app log for the `Starting Iceberg MCP Server on ...` line. |
 | `get_schema` → `Error:` but it worked locally | `load_dotenv()` returns `False` in Cloudera AI — `.env` is gitignored and never deployed. The `IMPALA_*` values must be set as **application environment variables**. The `[startup]` log lines print what the app actually sees; `<UNSET>` there is your answer. |
 | Tools listed but never called | Connector description too vague — name the data |
+| Mistral's Create button greyed out | Either the connector name has a hyphen/underscore/space, or the server negotiates an old MCP protocol version. Mistral requires `2025-06-18`; `fastmcp` 2.9.2 only ever replies `2025-03-26`. `requirements.txt` pins fastmcp 4.x for this reason. |
+| `ImportError: cannot import name 'FastMCP'` after upgrading | An in-place pip upgrade from fastmcp 2.x to 4.x leaves broken artifacts. Use `pip install --force-reinstall -r requirements.txt`, or recreate the environment. |
 
 ## Security
 
